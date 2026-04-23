@@ -3,9 +3,14 @@ package org.matrix.chromext.hook
 import android.app.Activity
 import android.os.Build
 import android.os.Handler
+import android.webkit.CookieManager
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebViewClient
 import java.lang.ref.WeakReference
+import java.net.HttpURLConnection
+import java.net.URL
 import org.matrix.chromext.Chrome
 import org.matrix.chromext.Listener
 import org.matrix.chromext.script.Local
@@ -17,6 +22,7 @@ import org.matrix.chromext.utils.findMethodOrNull
 import org.matrix.chromext.utils.hookAfter
 import org.matrix.chromext.utils.hookBefore
 import org.matrix.chromext.utils.invokeMethod
+import org.matrix.chromext.utils.matching
 
 object WebViewHook : BaseHook() {
 
@@ -27,6 +33,7 @@ object WebViewHook : BaseHook() {
 
   private val hookedViewClients = mutableSetOf<Class<*>>()
   private val hookedChromeClients = mutableSetOf<Class<*>>()
+  private val hookedInterceptRequest = mutableSetOf<Class<*>>()
 
   fun evaluateJavascript(code: String?, view: Any?) {
     val webView = (view ?: Chrome.getTab())
@@ -58,6 +65,92 @@ object WebViewHook : BaseHook() {
           Log.d("onPageStarted hooked on ${cls.name}")
         }
         .onFailure { Log.d("Failed to hook onPageStarted on ${cls.name}: $it") }
+    hookInterceptRequest(cls)
+  }
+
+  // AOSP WebView exposes its DevTools socket per sandboxed renderer process
+  // (`webview_devtools_remote_<renderer_pid>`), not at the host PID — so we
+  // can't reach it from the hook-process to call `Page.setBypassCSP`. Instead,
+  // strip the `Content-Security-Policy` response header from the main-frame
+  // document before it reaches the renderer; once the document has no CSP,
+  // fetch / WebSocket / EventSource calls from injected userscripts succeed.
+  // Only pages where a userscript would match pay the proxy cost.
+  private fun hookInterceptRequest(cls: Class<*>) {
+    if (cls === WebViewClient::class.java) return
+    if (!hookedInterceptRequest.add(cls)) return
+    runCatching {
+          findMethod(cls, true) {
+                name == "shouldInterceptRequest" &&
+                    parameterCount == 2 &&
+                    parameterTypes[1].name == "android.webkit.WebResourceRequest"
+              }
+              .hookAfter { param ->
+                val req = param.args[1] as? WebResourceRequest ?: return@hookAfter
+                if (!req.isForMainFrame) return@hookAfter
+                val url = req.url?.toString() ?: return@hookAfter
+                if (!url.startsWith("http")) return@hookAfter
+
+                val urlMatches =
+                    ScriptDbManager.scripts.any { runCatching { matching(it, url) }.getOrDefault(false) }
+                if (!urlMatches) return@hookAfter
+
+                val existing = param.result as? WebResourceResponse
+                if (existing != null) {
+                  runCatching {
+                    val filtered =
+                        (existing.responseHeaders ?: emptyMap()).filterKeys { k ->
+                          !k.lowercase().startsWith("content-security-policy")
+                        }
+                    existing.responseHeaders = filtered
+                  }
+                  return@hookAfter
+                }
+
+                if (req.method != "GET") return@hookAfter
+                runCatching { param.result = proxyWithCSPStripped(req) }
+                    .onFailure { Log.d("CSP strip failed for $url: $it") }
+              }
+          Log.d("shouldInterceptRequest hooked on ${cls.name}")
+        }
+        .onFailure { Log.d("Failed to hook shouldInterceptRequest on ${cls.name}: $it") }
+  }
+
+  private fun proxyWithCSPStripped(req: WebResourceRequest): WebResourceResponse? {
+    val urlStr = req.url.toString()
+    val conn = URL(urlStr).openConnection() as HttpURLConnection
+    conn.connectTimeout = 15000
+    conn.readTimeout = 30000
+    conn.instanceFollowRedirects = true
+    conn.requestMethod = req.method
+    req.requestHeaders.forEach { (k, v) -> conn.setRequestProperty(k, v) }
+    val cookieMgr = CookieManager.getInstance()
+    cookieMgr.getCookie(urlStr)?.takeIf { it.isNotEmpty() }?.let {
+      conn.setRequestProperty("Cookie", it)
+    }
+    conn.connect()
+
+    val code = conn.responseCode
+    conn.headerFields["Set-Cookie"]?.forEach { cookieMgr.setCookie(urlStr, it) }
+
+    val headers = mutableMapOf<String, String>()
+    conn.headerFields.forEach { (k, vs) ->
+      if (k == null) return@forEach
+      val lk = k.lowercase()
+      if (lk.startsWith("content-security-policy")) return@forEach
+      if (lk == "set-cookie") return@forEach
+      headers[k] = vs.joinToString(", ")
+    }
+
+    val contentType = conn.contentType ?: "text/html"
+    val mimeType = contentType.substringBefore(";").trim().ifEmpty { "text/html" }
+    val encoding =
+        if (contentType.contains("charset=", ignoreCase = true))
+            contentType.substringAfter("charset=", "utf-8").substringBefore(";").trim()
+        else "utf-8"
+    val body = if (code >= 400) conn.errorStream else conn.inputStream
+
+    return WebResourceResponse(
+        mimeType, encoding, code, conn.responseMessage ?: "OK", headers, body)
   }
 
   private fun hookChromeClient(cls: Class<*>) {
