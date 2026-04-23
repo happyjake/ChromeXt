@@ -63,6 +63,10 @@ object BulkImport {
     }
   }
 
+  // Per-file Last-Modified cache key prefix for the id-of-filename companion.
+  private const val MTIME_PREFS = "chromext_bulk_mtime"
+  private const val ID_SUFFIX = ".id"
+
   private fun importAll(configStr: String) {
     val cfg = JSONObject(configStr)
     val baseUrl = cfg.getString("url").let { if (it.endsWith("/")) it else "$it/" }
@@ -74,25 +78,45 @@ object BulkImport {
           "Basic $token"
         } else null
 
+    val ctx = Chrome.getContext()
+    val mtimeCache = ctx.getSharedPreferences(MTIME_PREFS, Context.MODE_PRIVATE)
+
     Log.i("BulkImport: listing $baseUrl")
-    val names = listWebDav(baseUrl, authHeader)
-    if (names.isEmpty()) {
+    val entries = listWebDav(baseUrl, authHeader)
+    if (entries.isEmpty()) {
       Log.e("BulkImport: no vm@2-* entries at $baseUrl")
       return
     }
-    Log.i("BulkImport: got ${names.size} filenames")
+    Log.i("BulkImport: got ${entries.size} filenames")
 
     val scripts = mutableListOf<Script>()
+    // name → (remote-mtime, parsed script id) for successful refreshes; flushed
+    // to prefs after the insert so we can skip these files next run.
+    val newMtimes = mutableMapOf<String, Pair<String, String>>()
+    // Ids of files whose cached mtime matched remote — not re-fetched but still
+    // present on the server, so they must survive the diff-based deletion pass.
+    val unchangedIds = mutableSetOf<String>()
     var disabled = 0
     var badHeader = 0
     var errored = 0
-    for (name in names) {
+    var skipped = 0
+
+    for ((name, mtime) in entries) {
+      val cachedMtime = mtimeCache.getString(name, null)
+      val cachedId = mtimeCache.getString(name + ID_SUFFIX, null)
+      if (cachedMtime != null && cachedId != null && mtime.isNotEmpty() && cachedMtime == mtime) {
+        unchangedIds.add(cachedId)
+        skipped++
+        continue
+      }
       try {
         val encoded = URLEncoder.encode(name, "UTF-8").replace("+", "%20")
         val body = fetch(baseUrl + encoded, authHeader)
         val doc = JSONObject(body)
         if (doc.optJSONObject("more")?.optInt("enabled", 1) == 0) {
           disabled++
+          // Drop cache so a later re-enable triggers a fresh fetch.
+          mtimeCache.edit().remove(name).remove(name + ID_SUFFIX).apply()
           continue
         }
         val code = doc.optString("code")
@@ -102,6 +126,7 @@ object BulkImport {
           continue
         }
         scripts.add(parsed)
+        if (mtime.isNotEmpty()) newMtimes[name] = mtime to parsed.id
       } catch (e: Exception) {
         Log.e("BulkImport: $name → ${e.message}")
         errored++
@@ -111,10 +136,19 @@ object BulkImport {
     if (scripts.isNotEmpty()) {
       ScriptDbManager.insert(*scripts.toTypedArray())
     }
-    val keepIds = scripts.map { it.id }.toSet()
+    if (newMtimes.isNotEmpty()) {
+      val editor = mtimeCache.edit()
+      newMtimes.forEach { (name, pair) ->
+        editor.putString(name, pair.first)
+        editor.putString(name + ID_SUFFIX, pair.second)
+      }
+      editor.apply()
+    }
+
+    val keepIds = scripts.map { it.id }.toSet() + unchangedIds
     var removed = 0
     if (keepIds.isNotEmpty()) {
-      val db = ScriptDbHelper(Chrome.getContext()).writableDatabase
+      val db = ScriptDbHelper(ctx).writableDatabase
       try {
         val toDelete = mutableListOf<String>()
         db.query("script", arrayOf("id"), null, null, null, null, null).use { c ->
@@ -134,23 +168,32 @@ object BulkImport {
     }
     ScriptDbManager.reload()
     Log.i(
-        "BulkImport done: inserted=${scripts.size}, disabled=$disabled, " +
-            "badHeader=$badHeader, errored=$errored, removed=$removed")
+        "BulkImport done: inserted=${scripts.size}, skipped=$skipped, " +
+            "disabled=$disabled, badHeader=$badHeader, errored=$errored, removed=$removed")
   }
 
-  // WebDAV PROPFIND listing. Extracts <D:href> entries, decodes percent- and
-  // HTML-encoding, returns filenames matching vm@2-*.
-  private fun listWebDav(url: String, auth: String?): List<String> {
+  // WebDAV PROPFIND listing with per-entry Last-Modified. Each response block
+  // yields a (filename, mtime) pair. Files without mtime (server that doesn't
+  // return getlastmodified) come back with an empty string and the caller
+  // treats them as "always re-fetch".
+  private fun listWebDav(url: String, auth: String?): List<Pair<String, String>> {
     val body = propfind(url, auth)
-    val names = linkedSetOf<String>()
-    for (m in hrefRegex.findAll(body)) {
-      val raw = m.groupValues[1].replace("&amp;", "&")
+    val responseRegex = Regex("<[A-Za-z]*:?response>([\\s\\S]*?)</[A-Za-z]*:?response>")
+    val mtimeRegex = Regex("<[A-Za-z]*:?getlastmodified>([^<]+)</")
+    val results = mutableListOf<Pair<String, String>>()
+    val seen = mutableSetOf<String>()
+    for (rm in responseRegex.findAll(body)) {
+      val block = rm.groupValues[1]
+      val hrefMatch = hrefRegex.find(block) ?: continue
+      val raw = hrefMatch.groupValues[1].replace("&amp;", "&")
       val trimmed = raw.trimEnd('/')
-      val match = fileRegex.find(trimmed) ?: continue
-      val decoded = URLDecoder.decode(match.groupValues[1], "UTF-8")
-      names.add(decoded)
+      val fileMatch = fileRegex.find(trimmed) ?: continue
+      val decoded = URLDecoder.decode(fileMatch.groupValues[1], "UTF-8")
+      if (!seen.add(decoded)) continue
+      val mtime = mtimeRegex.find(block)?.groupValues?.get(1)?.trim() ?: ""
+      results.add(decoded to mtime)
     }
-    return names.toList()
+    return results
   }
 
   private fun propfind(url: String, auth: String?): String {
@@ -164,11 +207,11 @@ object BulkImport {
       auth?.let { conn.setRequestProperty("Authorization", it) }
       conn.connectTimeout = 15_000
       conn.readTimeout = 30_000
-      // Minimal body requesting only <displayname> — most WebDAV servers still
-      // return the full href which is all we need.
+      // Request displayname + getlastmodified. getlastmodified lets us short-
+      // circuit re-fetches when the remote file hasn't changed since last sync.
       conn.doOutput = true
       val requestBody =
-          "<?xml version=\"1.0\"?><propfind xmlns=\"DAV:\"><prop><displayname/></prop></propfind>"
+          "<?xml version=\"1.0\"?><propfind xmlns=\"DAV:\"><prop><displayname/><getlastmodified/></prop></propfind>"
       conn.outputStream.use { it.write(requestBody.toByteArray()) }
       return conn.inputStream.bufferedReader().use { it.readText() }
     } finally {
