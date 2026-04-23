@@ -3,3 +3,5 @@
 .kotlin
 apktool
 *.apk
+
+local.properties
