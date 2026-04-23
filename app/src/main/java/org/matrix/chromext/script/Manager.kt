@@ -171,6 +171,12 @@ object ScriptDbManager {
     if (framesGranted && frameId == null) Chrome.injectFrames(webView)
   }
 
+  fun reload() {
+    val fresh = query()
+    scripts.clear()
+    scripts.addAll(fresh)
+  }
+
   fun updateScriptStorage() {
     val dbHelper = ScriptDbHelper(Chrome.getContext())
     val db = dbHelper.writableDatabase
