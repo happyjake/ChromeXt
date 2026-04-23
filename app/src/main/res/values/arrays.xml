@@ -30,7 +30,10 @@
 		<item>org.chromium.thorium</item>
 		<item>org.cromite.cromite</item>
 		<item>org.greatfire.freebrowser</item>
+		<item>org.telegram.messenger</item>
+		<item>org.telegram.plus</item>
 		<item>org.triple.banana</item>
+		<item>tw.nekomimi.nekogram</item>
 		<item>us.spotco.mulch</item>
 	</string-array>
 </resources>
