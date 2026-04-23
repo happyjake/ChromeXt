@@ -97,6 +97,15 @@ object Chrome {
       notificationManager.createNotificationChannel(default_channel)
       notificationManager.createNotificationChannel(silent_channel)
     }
+
+    // Register once per host process. Covers both Chromium and WebView paths —
+    // older PreferenceHook-scoped registration only fired in Chrome.
+    runCatching { BulkImport.registerReceiver() }.onFailure { Log.ex(it) }
+
+    // ScriptDbManager's class may have been loaded earlier with an empty list
+    // because <clinit> ran before mContext was set (early Xposed hooks from
+    // Activity.onStop etc.). Now that ctx is usable, refill from DB.
+    runCatching { ScriptDbManager.refreshIfEmpty() }.onFailure { Log.ex(it) }
   }
 
   private fun setupHttpCache(context: Context) {

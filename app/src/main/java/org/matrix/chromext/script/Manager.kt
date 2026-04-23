@@ -21,29 +21,35 @@ import org.matrix.chromext.utils.shouldBypassSandbox
 
 object ScriptDbManager {
 
-  val scripts = query()
+  // `<clinit>` may run before Chrome.init has populated mContext (the Xposed
+  // hook process can load this class from an Activity.onStop callback while
+  // the app's Application context is still null). Fall back to empty
+  // collections on a missing context — reload() refills everything once
+  // Chrome.init has run and a sync/query is attempted against a real DB.
+  val scripts: MutableList<Script> = runCatching { query() }.getOrDefault(mutableListOf())
   val cosmeticFilters: MutableMap<String, String>
   val userAgents: MutableMap<String, String>
   val cspRules: MutableMap<String, String>
   var keepStorage: Boolean
 
   init {
-    val ctx = Chrome.getContext()
+    val ctx = runCatching { Chrome.getContext() }.getOrNull()
     @Suppress("UNCHECKED_CAST")
     cosmeticFilters =
-        ctx.getSharedPreferences("CosmeticFilter", Context.MODE_PRIVATE).getAll()
-            as MutableMap<String, String>
+        ctx?.getSharedPreferences("CosmeticFilter", Context.MODE_PRIVATE)?.getAll()
+            as? MutableMap<String, String> ?: mutableMapOf()
     @Suppress("UNCHECKED_CAST")
     userAgents =
-        ctx.getSharedPreferences("UserAgent", Context.MODE_PRIVATE).getAll()
-            as MutableMap<String, String>
+        ctx?.getSharedPreferences("UserAgent", Context.MODE_PRIVATE)?.getAll()
+            as? MutableMap<String, String> ?: mutableMapOf()
     @Suppress("UNCHECKED_CAST")
     cspRules =
-        ctx.getSharedPreferences("CSPRule", Context.MODE_PRIVATE).getAll()
-            as MutableMap<String, String>
+        ctx?.getSharedPreferences("CSPRule", Context.MODE_PRIVATE)?.getAll()
+            as? MutableMap<String, String> ?: mutableMapOf()
 
     keepStorage =
-        ctx.getSharedPreferences("ChromeXt", Context.MODE_PRIVATE).getBoolean("keep_storage", true)
+        ctx?.getSharedPreferences("ChromeXt", Context.MODE_PRIVATE)?.getBoolean("keep_storage", true)
+            ?: true
   }
 
   fun insert(vararg script: Script) {
@@ -171,6 +177,14 @@ object ScriptDbManager {
     if (framesGranted && frameId == null) Chrome.injectFrames(webView)
   }
 
+  // Refill `scripts` from DB if <clinit> ran before Chrome.getContext() was
+  // available (which leaves the list empty). No-op once populated — we don't
+  // try to detect mid-session inserts here; BulkImport's explicit reload()
+  // covers that path.
+  fun refreshIfEmpty() {
+    if (scripts.isEmpty()) reload()
+  }
+
   fun reload() {
     val fresh = query()
     scripts.clear()
@@ -178,7 +192,8 @@ object ScriptDbManager {
   }
 
   fun updateScriptStorage() {
-    val dbHelper = ScriptDbHelper(Chrome.getContext())
+    val ctx = runCatching { Chrome.getContext() }.getOrNull() ?: return
+    val dbHelper = ScriptDbHelper(ctx)
     val db = dbHelper.writableDatabase
     scripts.forEach {
       if (it.storage != null) {
@@ -197,7 +212,8 @@ object ScriptDbManager {
       selection: String? = null,
       selectionArgs: Array<String>? = null,
   ): MutableList<Script> {
-    val dbHelper = ScriptDbHelper(Chrome.getContext())
+    val ctx = runCatching { Chrome.getContext() }.getOrNull() ?: return mutableListOf()
+    val dbHelper = ScriptDbHelper(ctx)
     val db = dbHelper.readableDatabase
     val cursor = db.query("script", null, selection, selectionArgs, null, null, null)
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {

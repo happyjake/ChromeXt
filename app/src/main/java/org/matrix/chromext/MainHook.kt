@@ -2,9 +2,7 @@ package org.matrix.chromext
 
 import android.app.AndroidAppHelper
 import android.content.Context
-import android.webkit.WebChromeClient
 import android.webkit.WebView
-import android.webkit.WebViewClient
 import de.robv.android.xposed.IXposedHookLoadPackage
 import de.robv.android.xposed.IXposedHookZygoteInit
 import de.robv.android.xposed.callbacks.XC_LoadPackage
@@ -131,24 +129,11 @@ class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
         return
       }
 
-      WebViewClient::class.java.declaredConstructors[0].hookAfter {
-        if (it.thisObject::class != WebViewClient::class) {
-          WebViewHook.ViewClient = it.thisObject::class.java
-          hookWebView()
-        }
-      }
-
-      WebChromeClient::class.java.declaredConstructors[0].hookAfter {
-        if (it.thisObject::class != WebChromeClient::class) {
-          WebViewHook.ChromeClient = it.thisObject::class.java
-          hookWebView()
-        }
-      }
+      hookWebView()
     }
   }
 
   private fun hookWebView() {
-    if (WebViewHook.ChromeClient == null || WebViewHook.ViewClient == null) return
     if (WebViewHook.WebView == null) {
       runCatching {
             WebViewHook.WebView = WebView::class.java

@@ -71,8 +71,6 @@ object PreferenceHook : BaseHook() {
           }
         }
 
-    org.matrix.chromext.BulkImport.registerReceiver()
-
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
       findMethodOrNull(WindowInsets::class.java) { name == "getSystemGestureInsets" }
           ?.hookBefore {
