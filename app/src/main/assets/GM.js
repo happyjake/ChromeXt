@@ -986,6 +986,9 @@ class ResponseSink {
       this.xhr.response.push(chunk);
     } else {
       this.xhr.response += chunk;
+      // Expose cumulative text during streaming so onprogress handlers
+      // (SSE parsers etc.) can read responseText, matching Violentmonkey.
+      this.xhr.responseText = this.xhr.response;
     }
     this.xhr.loaded += data.bytes || chunk.length;
     this.dispatch("progress");
