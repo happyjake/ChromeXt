@@ -121,7 +121,12 @@ if (typeof Symbol.ChromeXt == "undefined") {
         this.#target = target;
       } else {
         this.#target = new EventTarget();
-        this.#debug = console.debug.bind(console);
+        // Sentry / Datadog / Astro-style instrumentation wraps the *instance*
+        // method `console.debug = wrapper`. The native function still lives on
+        // `Console.prototype.debug` since they don't touch the prototype.
+        // Bind the prototype version so V8 attributes the dispatch call to
+        // `local://ChromeXt/init` (this script) instead of the page's bundle.
+        this.#debug = (Object.getPrototypeOf(console)?.debug ?? console.debug).bind(console);
       }
 
       this.#check(security);

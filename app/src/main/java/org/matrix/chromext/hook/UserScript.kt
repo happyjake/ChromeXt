@@ -128,20 +128,39 @@ object UserScriptHook : BaseHook() {
           // This should be the way to communicate with the front-end of ChromeXt
           val lineNumber = it.args[2] as Int
           val sourceId = it.args[3] as String
-          if (it.args[0] as Int == 0 &&
-              sourceId.startsWith("local://ChromeXt/init") &&
-              lineNumber == Local.anchorInChromeXt) {
-            Listener.startAction(it.args[1] as String, proxy.getTab(it.thisObject), null, sourceId)
-          } else {
-            val msg = it.args[1] as String
-            // Diagnostic: surface anchor mismatches when a payload looks like
-            // an action — gets logged-but-not-dispatched scripts noticed.
-            if (msg.startsWith("{\"action\":")) {
-              Log.e(
-                  "action-mismatch: level=${it.args[0]} sourceId=$sourceId line=$lineNumber expectedAnchor=${Local.anchorInChromeXt}")
+          val msg = it.args[1] as String
+          val level = it.args[0] as Int
+          // Strict path: message originates from local://ChromeXt/init at the
+          // randomized anchor line. Dispatch immediately.
+          val strictMatch =
+              level == 0 &&
+                  sourceId.startsWith("local://ChromeXt/init") &&
+                  lineNumber == Local.anchorInChromeXt
+
+          // Fallback: pages whose bundles wrap console.debug (Sentry, Datadog,
+          // Astro instrumentation, etc.) cause V8 to attribute the dispatch to
+          // the page's bundle URL rather than ours. The action JSON carries
+          // the random initKey which Listener.startAction validates against
+          // Local.key — that's the real security check, the sourceId check is
+          // just a fast path. Forward any debug-level message that looks like
+          // a ChromeXt action and let startAction's key check decide.
+          val keyMatch =
+              level == 0 &&
+                  msg.startsWith("{\"action\":") &&
+                  runCatching {
+                        org.json.JSONObject(msg).optDouble("key", Double.NaN) == Local.key
+                      }
+                      .getOrDefault(false)
+
+          if (strictMatch || keyMatch) {
+            if (!strictMatch) {
+              Log.d(
+                  "console-hijack-fallback: dispatching action from sourceId=$sourceId line=$lineNumber (page hijacks console.debug)")
             }
+            Listener.startAction(msg, proxy.getTab(it.thisObject), null, sourceId)
+          } else {
             Log.d(
-                when (it.args[0] as Int) {
+                when (level) {
                   0 -> "D"
                   2 -> "W"
                   3 -> "E"
