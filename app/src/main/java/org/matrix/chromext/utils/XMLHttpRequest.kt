@@ -56,6 +56,7 @@ class XMLHttpRequest(
   }
 
   fun send() {
+    Log.i("XHR enter send: $url")
     connection = url.openConnection() as HttpURLConnection
     with(connection!!) {
       setRequestMethod(method)
@@ -89,6 +90,7 @@ class XMLHttpRequest(
             }
 
             data.put("status", responseCode)
+            Log.i("XHR got responseCode=$responseCode for $url")
             data.put("statusText", responseMessage)
             val headers = headerFields.filter { it.key != null }.mapValues { JSONArray(it.value) }
             data.put("headers", JSONObject(headers))
@@ -120,19 +122,27 @@ class XMLHttpRequest(
               response("progress", data, false)
               data.remove("headers")
             }
+            Log.i("XHR delivering load: $url")
             response("load", data)
           }
           .onFailure {
+            Log.e("XHR ${url}: ${it::class.java.name}: ${it.message}")
+            it.stackTrace.take(8).forEach { f -> Log.e("  at $f") }
+            data.put("type", it::class.java.name)
+            data.put("message", it.message ?: "(null message)")
+            data.put("stack", it.stackTraceToString())
             if (it is IOException) {
-              data.put("type", it::class.java.name)
-              data.put("message", it.message)
-              data.put("stack", it.stackTraceToString())
               errorStream?.bufferedReader()?.use { it.readText() }?.let { data.put("error", it) }
               if (it is SocketTimeoutException) {
                 response("timeout", data.put("bytesTransferred", it.bytesTransferred))
               } else {
                 response("error", data)
               }
+            } else {
+              // Non-IOException would otherwise be swallowed, leaving the script
+              // in a forever-pending state. Surface as an error callback so the
+              // page sees something fail and can fall back / retry.
+              response("error", data)
             }
           }
     }

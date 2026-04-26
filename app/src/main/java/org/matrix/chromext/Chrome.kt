@@ -106,6 +106,10 @@ object Chrome {
     // because <clinit> ran before mContext was set (early Xposed hooks from
     // Activity.onStop etc.). Now that ctx is usable, refill from DB.
     runCatching { ScriptDbManager.refreshIfEmpty() }.onFailure { Log.ex(it) }
+
+    // Watch the (bind-mounted) DB file for external writes — picks up syncs
+    // run by the chromext-share Magisk module without needing a force-stop.
+    runCatching { org.matrix.chromext.script.DbWatcher.start() }.onFailure { Log.ex(it) }
   }
 
   private fun setupHttpCache(context: Context) {

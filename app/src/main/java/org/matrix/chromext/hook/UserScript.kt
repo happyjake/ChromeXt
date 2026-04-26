@@ -133,13 +133,20 @@ object UserScriptHook : BaseHook() {
               lineNumber == Local.anchorInChromeXt) {
             Listener.startAction(it.args[1] as String, proxy.getTab(it.thisObject), null, sourceId)
           } else {
+            val msg = it.args[1] as String
+            // Diagnostic: surface anchor mismatches when a payload looks like
+            // an action — gets logged-but-not-dispatched scripts noticed.
+            if (msg.startsWith("{\"action\":")) {
+              Log.e(
+                  "action-mismatch: level=${it.args[0]} sourceId=$sourceId line=$lineNumber expectedAnchor=${Local.anchorInChromeXt}")
+            }
             Log.d(
                 when (it.args[0] as Int) {
                   0 -> "D"
                   2 -> "W"
                   3 -> "E"
                   else -> "V"
-                } + ": [${sourceId}@${lineNumber}] ${it.args[1]}")
+                } + ": [${sourceId}@${lineNumber}] ${msg}")
           }
         }
 

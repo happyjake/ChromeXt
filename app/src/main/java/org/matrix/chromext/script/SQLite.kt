@@ -23,6 +23,17 @@ private const val SQL_CREATE_ENTRIES =
 class ScriptDbHelper(context: Context) :
     SQLiteOpenHelper(context, DATABASE_NAME, null, DATABASE_VERSION) {
 
+  // The chromext-share Magisk module bind-mounts a single userscript file
+  // across every hooked host. WAL puts -wal/-shm next to the file in each
+  // host's own databases/ dir (not bind-mounted), so writers would diverge.
+  // DELETE keeps the DB to one persistent file; the transient -journal stays
+  // local to each host but the main-file fcntl locks are coordinated via the
+  // shared inode. PRAGMA returns a value, so rawQuery, not execSQL.
+  override fun onConfigure(db: SQLiteDatabase) {
+    super.onConfigure(db)
+    db.rawQuery("PRAGMA journal_mode=DELETE", null).use { it.moveToFirst() }
+  }
+
   override fun onCreate(db: SQLiteDatabase) {
     db.execSQL(SQL_CREATE_ENTRIES)
   }
