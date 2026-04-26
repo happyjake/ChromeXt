@@ -13,6 +13,7 @@ import org.matrix.chromext.hook.PageInfoHook
 import org.matrix.chromext.hook.PageMenuHook
 import org.matrix.chromext.hook.PreferenceHook
 import org.matrix.chromext.hook.SkooveHook
+import org.matrix.chromext.hook.SpotifyHook
 import org.matrix.chromext.hook.UserScriptHook
 import org.matrix.chromext.hook.WebViewHook
 import org.matrix.chromext.utils.Log
@@ -40,6 +41,7 @@ val supportedPackages =
         "com.naver.whale",
         "com.sec.android.app.sbrowser",
         "com.sec.android.app.sbrowser.beta",
+        "com.spotify.music",
         "com.vivaldi.browser",
         "com.vivaldi.browser.snapshot",
         "org.axpos.aosmium",
@@ -58,6 +60,11 @@ class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
     if (lpparam.packageName == "com.skoove.piano") {
       SkooveHook.loader = PathClassLoader(lpparam.appInfo.sourceDir, lpparam.classLoader)
       initHooks(SkooveHook)
+      return
+    }
+    if (lpparam.packageName == "com.spotify.music") {
+      SpotifyHook.loader = PathClassLoader(lpparam.appInfo.sourceDir, lpparam.classLoader)
+      initHooks(SpotifyHook)
       return
     }
     if (supportedPackages.contains(lpparam.packageName)) {
