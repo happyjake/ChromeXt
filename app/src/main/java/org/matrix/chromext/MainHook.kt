@@ -93,6 +93,17 @@ class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
     } else {
       val ctx = AndroidAppHelper.currentApplication()
 
+      // LSPosed re-dispatches handleLoadPackage on classloader-creation events
+      // inside an already-running process. MIUI's text-selection action mode
+      // (DecorViewStubImpl.createActionMode -> Context.getClassLoader) triggers
+      // exactly this inside the browser process. Falling through to the generic
+      // WebView-host path then calls WebView.setWebContentsDebuggingEnabled(),
+      // which boots the system WebView's Chromium inside the browser's own
+      // process and hard-aborts with SIGTRAP. Supported browsers are already
+      // handled by the supportedPackages branch above, so drop these spurious
+      // re-dispatches instead of crashing the host.
+      if (ctx != null && supportedPackages.contains(ctx.packageName)) return
+
       Chrome.isMi =
           Chrome.isMi ||
               lpparam.packageName == "com.mi.globalbrowser" ||
