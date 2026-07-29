@@ -46,44 +46,58 @@ object UserScriptProxy {
         Chrome.load("org.chromium.chrome.browser.tab.TabImpl")
       }
   private val getId = findMethodOrNull(tabImpl) { name == "getId" }
-  private val mId =
-      (if (Chrome.isSamsung) tabWebContentsDelegateAndroidImpl else tabImpl)
-          .declaredFields
-          .run {
-            val target = find { it.name == "mId" }
-            if (target == null) {
-              val profile = Chrome.load("org.chromium.chrome.browser.profiles.Profile")
-              val windowAndroid = Chrome.load("org.chromium.ui.base.WindowAndroid")
-              var startIndex = indexOfFirst { it.type == gURL }
-              val endIndex = indexOfFirst {
-                it.type == profile ||
-                    it.type == ContextThemeWrapper::class.java ||
-                    it.type == windowAndroid
-              }
-              if (startIndex == -1 || startIndex > endIndex) startIndex = 0
-              slice(startIndex..endIndex - 1).findLast { it.type == Int::class.java }!!
-            } else target
-          }
-          .also { it.isAccessible = true }
+
+  // Chrome 150 removed TabImpl.mId; resolve it lazily so a missing field only
+  // breaks getTabId() when getId() is also unavailable, instead of NPE-ing the
+  // whole <clinit> and killing the UserScript hook.
+  private val mId by
+      lazy(LazyThreadSafetyMode.NONE) {
+        (if (Chrome.isSamsung) tabWebContentsDelegateAndroidImpl else tabImpl)
+            .declaredFields
+            .run {
+              val target = find { it.name == "mId" }
+              if (target == null) {
+                val profile = Chrome.load("org.chromium.chrome.browser.profiles.Profile")
+                val windowAndroid = Chrome.load("org.chromium.ui.base.WindowAndroid")
+                var startIndex = indexOfFirst { it.type == gURL }
+                val endIndex = indexOfFirst {
+                  it.type == profile ||
+                      it.type == ContextThemeWrapper::class.java ||
+                      it.type == windowAndroid
+                }
+                if (startIndex == -1 || startIndex > endIndex) startIndex = 0
+                slice(startIndex..endIndex - 1).findLast { it.type == Int::class.java }!!
+              } else target
+            }
+            .also { it.isAccessible = true }
+      }
   val mTab = findField(tabWebContentsDelegateAndroidImpl) { type == tabImpl }
-  val mIsLoading =
-      tabImpl.declaredFields
-          .run {
-            // mIsLoading is used in method stopLoading, before calling
-            // Lorg/chromium/content_public/browser/WebContents;->stop()V
-            val target = find { it.name == "mIsLoading" }
-            if (target == null) {
-              val webContents = Chrome.load("org.chromium.content_public.browser.WebContents")
-              val startIndex =
-                  maxOf(
-                      indexOfFirst { it.type == webContents },
-                      indexOfFirst { it.type == loadUrlParams })
-              slice(startIndex..size - 1).find {
-                it.type == Boolean::class.java && !Modifier.isStatic(it.modifiers)
-              }!!
-            } else target
-          }
-          .also { it.isAccessible = true }
+
+  // Tab.isLoading() existed on older builds; Chrome 150 removed every named
+  // loading-state accessor, so fall back to the backing field.
+  private val isLoadingMethod =
+      findMethodOrNull(tabImpl) { name == "isLoading" && parameterCount == 0 }
+
+  // Resolved lazily so a missing field cannot NPE the whole <clinit> (see mId
+  // above). Chrome 150 dropped the mIsLoading name; behaviorally verified on
+  // 150.0.7871.186 that the loading flag is the FIRST declared boolean
+  // instance field of TabImpl (1 during navigation, flips to 0 when the page
+  // settles — field/method timelines logged via BOOLPOLL diagnostics).
+  private val mIsLoading by
+      lazy(LazyThreadSafetyMode.NONE) {
+        tabImpl.declaredFields
+            .filter { it.type == Boolean::class.java && !Modifier.isStatic(it.modifiers) }
+            .run { find { it.name == "mIsLoading" } ?: first() }
+            .also { it.isAccessible = true }
+      }
+
+  fun isLoading(tab: Any): Boolean {
+    return if (isLoadingMethod != null) {
+      isLoadingMethod.invoke(tab) as Boolean
+    } else {
+      mIsLoading.get(tab) as Boolean
+    }
+  }
   val getUrl = findMethodOrNull(tabImpl) { returnType == gURL }
   val loadUrl =
       findMethod(if (Chrome.isSamsung) tabWebContentsDelegateAndroidImpl else tabImpl) {
