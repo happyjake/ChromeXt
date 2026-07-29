@@ -10,7 +10,10 @@ import org.matrix.chromext.Chrome
 
 private val blocksReg =
     Regex(
-        """(?<metablock>[\S\s]*?// ==UserScript==\r?\n[\S\s]*?\r?\n// ==/UserScript==\s+)(?<code>[\S\s]*)""")
+        // \s* (not \s+) after the closing tag: rows inserted into the script DB
+        // by hand may store a meta block with no trailing newline, and \s+
+        // would silently drop the whole script (parseScript -> null).
+        """(?<metablock>[\S\s]*?// ==UserScript==\r?\n[\S\s]*?\r?\n// ==/UserScript==\s*)(?<code>[\S\s]*)""")
 private val metaReg = Regex("""^//\s+@(?<key>[\w-]+)(\s+(?<value>.+))?""")
 
 fun parseScript(input: String, storage: String? = null): Script? {
